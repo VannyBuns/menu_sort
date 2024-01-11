@@ -1,62 +1,61 @@
 #include <string.h>
-#include <stdarg.h>
-#include <stdlib.h>
-#include <stdio.h>
 #include <malloc.h>
 #include <math.h>
-#include <gctypes.h>
-#include <fat.h>
-#include <iosuhax.h>
-#include <iosuhax_devoptab.h>
-#include <iosuhax_disc_interface.h>
-#include "dynamic_libs/os_functions.h"
-#include "dynamic_libs/fs_functions.h"
-#include "dynamic_libs/gx2_functions.h"
-#include "dynamic_libs/sys_functions.h"
-#include "dynamic_libs/vpad_functions.h"
-#include "dynamic_libs/padscore_functions.h"
-#include "dynamic_libs/socket_functions.h"
-#include "dynamic_libs/ax_functions.h"
-#include "dynamic_libs/act_functions.h"
-//#include "dynamic_libs/ccr_functions.h"
-#include "fs/fs_utils.h"
-#include "fs/sd_fat_devoptab.h"
-#include "system/memory.h"
-#include "utils/logger.h"
-#include "utils/utils.h"
-#include "utils/file.h"
-#include "utils/screen.h"
-#include "utils/dict.h"
+#include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include "common/common.h"
 #include <dirent.h>
-#include <libxml/parser.h>
-#include <libxml/tree.h>
-#include <libxml/xpath.h>
+#include <mocha/mocha.h>
+#include <coreinit/filesystem_fsa.h>
+#include <coreinit/ios.h>
+#include <coreinit/mcp.h>
+#include <coreinit/exit.h>
+#include <coreinit/thread.h>
+#include <coreinit/time.h>
+#include <coreinit/screen.h>
+#include <coreinit/systeminfo.h>
+#include <vpad/input.h>
+#include <nn/ac.h>
+#include <nn/act.h>
+#include <unistd.h>
+#include <wut.h>
+#include <whb/log.h>
+#include <whb/log_udp.h>
+#include <whb/log_console.h>
+#include <whb/proc.h>
+#include "utils/dict.h"
+#include "utils/file.h"
 
-#define TITLE_TEXT "Sort Wii U Menu v1.2.0 - Yardape8000 & doino-gretchenliev"
+#define TITLE_TEXT "Sort Wii U Menu v1.3.0 - doino-gretchenliev & VannyBuns"
 #define HBL_TITLE_ID 0x13374842
 #define MAX_ITEMS_COUNT 300
+#define _SYSGetSystemApplicationTitleId
+#define OSScreenClearBuffer(color) ({ \
+    OSScreenClearBufferEx(SCREEN_TV, color); \
+    OSScreenClearBufferEx(SCREEN_DRC, color); \
+})	
 
-static const char *systemXmlPath = "storage_slc:/config/system.xml";
-static const char *syshaxXmlPath = "storage_slc:/config/syshax.xml";
-static const char *cafeXmlPath = "storage_slc:/proc/prefs/cafe.xml";
+#define OSScreenPutFont(row, column, buffer) ({ \
+    OSScreenPutFontEx(SCREEN_TV, row, column, buffer); \
+    OSScreenPutFontEx(SCREEN_DRC, row, column, buffer); \
+})
+
 static const char *dontmovePath = "sd:/wiiu/apps/menu_sort/dontmove";
 static const char *gamemapPath = "sd:/wiiu/apps/menu_sort/titlesmap";
 static const char *backupPath = "sd:/wiiu/apps/menu_sort/BaristaAccountSaveFile.dat";
-static const char *languages[] = {"JA", "EN", "FR", "DE", "IT", "ES", "ZHS", "KO", "NL", "PT", "RU", "ZHT"};
-static char languageText[14] = "longname_en";
 
 int badNamingMode = 0;
 int ignoreThe = 0;
 int backup = 0;
 int restore = 0;
 int count = 0;
-
 struct MenuItemStruct
 {
-	u32 ID;
-	u32 type;
-	u32 titleIDPrefix;
+	uint32_t ID;
+	uint32_t type;
+	uint32_t titleIDPrefix;
 	char name[65];
 };
 
@@ -69,60 +68,12 @@ enum itemTypes
 	MENU_ITEM_FLDR = 0x10
 };
 
-//just to be able to call async
-void someFunc(void *arg)
-{
-	(void)arg;
-}
+	int startsWith(const char *a, const char *b);
+    char *prepend(char *s, const char *t);
+    void removeThe(char *src);
 
-static int mcp_hook_fd = -1;
-int MCPHookOpen()
-{
-	//take over mcp thread
-	mcp_hook_fd = MCP_Open();
-	if (mcp_hook_fd < 0)
-		return -1;
-	IOS_IoctlAsync(mcp_hook_fd, 0x62, (void *)0, 0, (void *)0, 0, someFunc, (void *)0);
-	//let wupserver start up
-	sleep(1);
-	if (IOSUHAX_Open("/dev/mcp") < 0)
-	{
-		MCP_Close(mcp_hook_fd);
-		mcp_hook_fd = -1;
-		return -1;
-	}
-	return 0;
-}
 
-void MCPHookClose()
-{
-	if (mcp_hook_fd < 0)
-		return;
-	//close down wupserver, return control to mcp
-	IOSUHAX_Close();
-	//wait for mcp to return
-	sleep(1);
-	MCP_Close(mcp_hook_fd);
-	mcp_hook_fd = -1;
-}
-
-int fsa_read(int fsa_fd, int fd, void *buf, int len)
-{
-	int done = 0;
-	uint8_t *buf_u8 = (uint8_t *)buf;
-	while (done < len)
-	{
-		size_t read_size = len - done;
-		int result = IOSUHAX_FSA_ReadFile(fsa_fd, buf_u8 + done, 0x01, read_size, fd, 0);
-		if (result < 0)
-			return result;
-		else
-			done += result;
-	}
-	return done;
-}
-
-int smartStrcmp(const char *a, const char *b, const u32 a_id, const u32 b_id)
+int smartStrcmp(const char *a, const char *b, const uint32_t a_id, const uint32_t b_id)
 {
 	char *ac = malloc(strlen(a) + 1);
 	char *bc = malloc(strlen(b) + 1);
@@ -175,50 +126,13 @@ int fSortCond(const void *c1, const void *c2)
 					   ((struct MenuItemStruct *)c2)->ID);
 }
 
-void getXMLelement(const char *buff, size_t buffSize, const char *url, const char *elementName, char *text, size_t textSize)
-{
-	text[0] = 0;
-	xmlDocPtr doc = xmlReadMemory(buff, buffSize, url, "utf-8", 0);
-	xmlNode *root_element = xmlDocGetRootElement(doc);
-	xmlNode *cur_node = NULL;
-	xmlChar *nodeText = NULL;
-
-	if (root_element != NULL && root_element->children != NULL)
-	{
-		for (cur_node = root_element->children; cur_node; cur_node = cur_node->next)
-		{
-			if (cur_node->type == XML_ELEMENT_NODE)
-			{
-				if (strcasecmp((const char *)cur_node->name, elementName) == 0)
-				{
-					nodeText = xmlNodeListGetString(doc, cur_node->xmlChildrenNode, 1);
-					if ((nodeText != NULL) && (textSize > 1))
-						strncpy(text, (const char *)nodeText, textSize - 1);
-					xmlFree(nodeText);
-					break;
-				}
-			}
-		}
-	}
-	xmlFreeDoc(doc);
-}
-
-int getXMLelementInt(const char *buff, size_t buffSize, const char *url, const char *elementName, int base)
-{
-	int ret;
-	char text[40] = "";
-	getXMLelement(buff, buffSize, url, elementName, text, 40);
-	ret = (int)strtol((char *)text, NULL, base);
-	return ret;
-}
-
 int readToBuffer(char **ptr, size_t *bufferSize, const char *path)
 {
 	FILE *fp;
 	size_t size;
 	fp = fopen(path, "rb");
 	if (!fp)
-		return -1;
+	return -1;
 	fseek(fp, 0L, SEEK_END); // fstat.st_size returns 0, so we use this instead
 	size = ftell(fp);
 	rewind(fp);
@@ -230,98 +144,58 @@ int readToBuffer(char **ptr, size_t *bufferSize, const char *path)
 	return 0;
 }
 
-void getIDname(u32 id, u32 titleIDPrefix, char *name, size_t nameSize, u32 type)
+void getIDname(uint32_t id, uint32_t titleIDPrefix, char *name, size_t nameSize, uint32_t type)
 {
-	char *xBuffer = NULL;
-	u32 xSize = 0;
 	char path[255] = "";
 	name[0] = 0;
 	sprintf(path, "storage_%s:/usr/title/%08x/%08x/meta/meta.xml", (type == MENU_ITEM_USB) ? "usb" : "mlc", titleIDPrefix, id);
-	log_printf("%s\n", path);
-	if (readToBuffer(&xBuffer, &xSize, path) < 0)
-		log_printf("Could not open %08x meta.xml\n", id);
-	else
-	{
-		// parse meta.xml file
-		if (xBuffer != NULL)
-		{
-			getXMLelement(xBuffer, xSize, "meta.xml", languageText, name, nameSize);
-			free(xBuffer);
-			log_printf(" %s\n  %s\n", path, name);
-		}
-		else
-		{
-			log_printf("Memory not allocated for %08x meta.xml\n", id);
-		}
-	}
+	WHBLogPrintf("%s\n", path);
 }
 
-/* Entry point */
-int Menu_Main(void)
-{
-	//!*******************************************************************
-	//!                   Initialize function pointers                   *
-	//!*******************************************************************
-	//! do OS (for acquire) and sockets first so we got logging
-	InitOSFunctionPointers();
-	InitSysFunctionPointers();
-	InitACTFunctionPointers();
-	//	InitCCRFunctionPointers();
-	InitSocketFunctionPointers();
+int main(int argc, char **argv) {
 
-	log_init("192.168.1.16");
-	log_print("\n\nStarting Main\n");
+    if (Mocha_InitLibrary() != MOCHA_RESULT_SUCCESS) {
+        WHBLogPrintf("Mocha_InitLibrary failed");
+        WHBLogConsoleDraw();
+        OSSleepTicks(OSMillisecondsToTicks(3000));
+        goto exit;
+    }
 
-	InitFSFunctionPointers();
-	InitVPadFunctionPointers();
-
-	log_print("Function exports loaded\n");
-
-	//!*******************************************************************
-	//!                    Initialize heap memory                        *
-	//!*******************************************************************
-	//log_print("Initialize memory management\n");
-	//! We don't need bucket and MEM1 memory so no need to initialize
-	//memoryInitialize();
-
-	int fsaFd = -1;
-	int failed = 1;
-	char failError[65] = "";
 	char *fBuffer = NULL;
 	size_t fSize = 0;
-	int usb_Connected = 0;
-	u32 sysmenuId = 0;
-	u32 cbhcID = 0;
+	char failError[65] = "";
 	int userPersistentId = 0;
+	int screenGetPrintLine();
+	void screenSetPrintLine(int line);
+	int screenPrintAt(int x, int y, char *fmt, ...);
+	uint32_t sysmenuId = 0;
 
 	VPADInit();
 
-	screenInit();
-	screenClear();
-	screenPrint(TITLE_TEXT);
-	screenPrint("Choose sorting method:");
-	screenPrint("Press 'B' for standard sorting.");
-	screenPrint("Press 'A' for standard sorting(ignoring leading 'The').");
-	screenPrint("Press 'X' for bad naming mode sorting.");
-	screenPrint("Press 'Y' for bad naming mode sorting(ignoring leading 'The').");
-	screenPrint("Press '+' for backup of the current order(incl. folders).");
-	screenPrint("Press '-' for restore of the current order(incl. folders).");
-	screenPrint("Press 'L' for counting the items only(no changes).");
+	OSScreenInit();
+	OSScreenClearBuffer(0);
+	OSScreenPutFont(0, 0, TITLE_TEXT);
+	OSScreenPutFont(0, 1, "Choose sorting method:");
+	OSScreenPutFont(0, 2, "Press 'B' for standard sorting.");
+	OSScreenPutFont(0, 3, "Press 'A' for standard sorting(ignoring leading 'The').");
+	OSScreenPutFont(0, 4, "Press 'X' for bad naming mode sorting.");
+	OSScreenPutFont(0, 5, "Press 'Y' for bad naming mode sorting(ignoring leading 'The').");
+	OSScreenPutFont(0, 6, "Press '+' for backup of the current order(incl. folders).");
+	OSScreenPutFont(0, 7, "Press '-' for restore of the current order(incl. folders).");
+	OSScreenPutFont(0, 8, "Press 'L' for counting the items only(no changes).");
 
-	int vpadError;
-	VPADData vpad;
 
 	char modeText[25] = "";
 	char ignoreTheText[25] = "";
 
-	while (1)
+	WHBProcInit();
+	VPADStatus buffer;
+	while (WHBProcIsRunning())
 	{
 
-		VPADRead(0, &vpad, 1, &vpadError);
-		u32 pressedBtns = 0;
-
-		if (!vpadError)
-			pressedBtns = vpad.btns_d | vpad.btns_h;
+		VPADRead(VPAD_CHAN_0, &buffer, 1, NULL);
+		uint32_t pressedBtns = 0;
+			pressedBtns = (buffer.trigger | buffer.hold);
 
 		if (pressedBtns & VPAD_BUTTON_B)
 		{
@@ -383,13 +257,13 @@ int Menu_Main(void)
 		usleep(1000);
 	}
 
-	screenClear();
-	screenSetPrintLine(0);
-	screenPrint(TITLE_TEXT);
+	OSScreenClearBuffer(0);
+	void screenSetPrintLine(int line);
+	OSScreenPutFont(0,0, TITLE_TEXT);
 	char modeSelectedText[50] = "";
 	sprintf(modeSelectedText, "Starting %s%s...", modeText, ignoreTheText);
-	screenPrint(modeSelectedText);
-	log_printf(modeSelectedText);
+	OSScreenPutFont(0, 2, modeSelectedText);
+	WHBLogPrintf(modeSelectedText);
 
 	// Get Wii U Menu Title
 	// Do this before mounting the file system.
@@ -400,121 +274,68 @@ int Menu_Main(void)
 	else
 	{
 		strcpy(failError, "Failed to get Wii U Menu Title!");
-		goto prgEnd;
+		goto exit;
 	}
-	log_printf("Wii U Menu Title = %08X\n", sysmenuId);
+	WHBLogPrintf("Wii U Menu Title = %08X\n", sysmenuId);
 
 	// Get current user account slot
-	nn_act_initialize();
-	unsigned char userSlot = nn_act_getslotno();
-	userPersistentId = nn_act_GetPersistentIdEx(userSlot);
-	log_printf("User Slot = %d, ID = %08x\n", userSlot, userPersistentId);
-	nn_act_finalize();
+	ACInitialize();
+	
+	int GetSlotNo();
+	int GetPersistentId();
+	unsigned char userSlot = GetSlotNo();
+	userPersistentId = GetPersistentId(userSlot);
+	WHBLogPrintf("User Slot = %d, ID = %08x\n", userSlot, userPersistentId);
+	ACFinalize();
 
 	//!*******************************************************************
 	//!                        Initialize FS                             *
 	//!*******************************************************************
-	log_printf("Mount partitions\n");
+	WHBLogPrintf("Mount partitions\n");
 
-	int res = IOSUHAX_Open(NULL);
-	if (res < 0)
-		res = MCPHookOpen();
-	if (res < 0)
-	{
-		strcpy(failError, "IOSUHAX_open failed\n");
-		goto prgEnd;
-	}
-	else
-	{
-		fatInitDefault();
-		fsaFd = IOSUHAX_FSA_Open();
-		if (fsaFd < 0)
-		{
-			strcpy(failError, "IOSUHAX_FSA_Open failed\n");
-			goto prgEnd;
+			FSAInit();
+			int	gClient = FSAAddClient(NULL);
+			if (gClient == 0) {
+			WHBLogPrintf("Failed to add FSAClient");
+			WHBLogConsoleDraw();
+			OSSleepTicks(OSMillisecondsToTicks(3000));
+			goto exit;
 		}
-
-		if (mount_fs("storage_slc", fsaFd, NULL, "/vol/system") < 0)
+		if (Mocha_UnlockFSClientEx(gClient) != MOCHA_RESULT_SUCCESS) 
 		{
+			FSADelClient(gClient);
+			strcpy(failError, "Failed to add FSAClient");
+			WHBLogConsoleDraw();
+			OSSleepTicks(OSMillisecondsToTicks(3000));
+			goto exit;
+		}
+		if (Mocha_MountFS("storage_slc", NULL, "/vol/system") < 0)
+		{
+			FSADelClient(gClient);
 			strcpy(failError, "Failed to mount SLC!");
-			goto prgEnd;
+			WHBLogConsoleDraw();
+			OSSleepTicks(OSMillisecondsToTicks(3000));
+			goto exit;
 		}
-		if (mount_fs("storage_mlc", fsaFd, NULL, "/vol/storage_mlc01") < 0)
+		if (Mocha_MountFS("storage_mlc", NULL, "/vol/storage_mlc01") < 0)
 		{
-			strcpy(failError, "Failed to mount MLC!");
-			goto prgEnd;
+			FSADelClient(gClient);
+			strcpy(failError, "Failed to Mount MLC!");
+			WHBLogConsoleDraw();
+			OSSleepTicks(OSMillisecondsToTicks(3000));
+			goto exit;
 		}
-		res = mount_fs("storage_usb", fsaFd, NULL, "/vol/storage_usb01");
-		usb_Connected = res >= 0;
-	}
-
-	// Get Country Code
-	int language = 0;
-	// NEED TO FIGURE OUT WHAT RPL TO LOAD
-	//	int (*SCIGetCafeLanguage)(int *language);
-	//	OSDynLoad_FindExport(xxxx, 0, "SCIGetCafeLanguage", &SCIGetCafeLanguage);
-	//	ret = SCIGetCafeLanguage(&language);
-	// This doesn't work either
-	//	u32 languageCCR = 0;
-	//	CCRSysGetLanguage(&languageCCR);
-	//	log_printf("CCR language = %d\n", languageCCR);
-
-	// really should use SCIGetCafeLanguage(), but until then, just
-	// read cafe.xml file
-	if (readToBuffer(&fBuffer, &fSize, cafeXmlPath) < 0)
-	{
-		strcpy(failError, "Could not open cafe.xml\n");
-		goto prgEnd;
-	}
-	// parse cafe.xml file
-	if (fBuffer != NULL)
-	{
-		language = getXMLelementInt(fBuffer, fSize, "cafe.xml", "language", 10);
-		sprintf(languageText, "longname_%s", languages[language]);
-		log_printf("cafe.xml size = %d, language = %d %s\n", fSize, language, languages[language]);
-		free(fBuffer);
-	}
-	else
-	{
-		strcpy(failError, "Memory not allocated for cafe.xml\n");
-		goto prgEnd;
-	}
-
-	// Get CBHC Title
-	// If syshax.xml exists, then assume cbhc exists
-	FILE *fp = fopen(syshaxXmlPath, "rb");
-	if (fp)
-	{
-		fclose(fp);
-		// read system.xml file
-		if (readToBuffer(&fBuffer, &fSize, systemXmlPath) < 0)
-		{
-			strcpy(failError, "Could not open system.xml\n");
-			goto prgEnd;
-		}
-		// parse system.xml file
-		if (fBuffer != NULL)
-		{
-			cbhcID = (u32)getXMLelementInt(fBuffer, fSize, "system.xml", "default_title_id", 10);
-			free(fBuffer);
-			log_printf("system.xml size = %d, cbhcID = %d\n", fSize, cbhcID);
-		}
-		else
-		{
-			strcpy(failError, "Memory not allocated for system.xml\n");
-			goto prgEnd;
-		}
-	}
+		Mocha_MountFS("storage_usb", NULL, "/vol/storage_usb01");
 
 	// Read Don't Move titles.
 	// first try dontmoveX.hex where X is the user ID
 	// if that fails try dontmove.txt
 	char dmPath[65] = "";
-	u32 *dmItem = NULL;
+	uint32_t *dmItem = NULL;
 	int dmTotal = 0;
 	size_t titleIDSize = 8;
 	sprintf(dmPath, "%s%1x.txt", dontmovePath, userPersistentId & 0x0000000f);
-	fp = fopen(dmPath, "rb");
+	 FILE *fp = fopen(dmPath, "rb");
 	if (!fp)
 	{
 		sprintf(dmPath, "%s.txt", dontmovePath);
@@ -522,7 +343,7 @@ int Menu_Main(void)
 	}
 	if (fp)
 	{
-		log_printf("Loading %s\n", dmPath);
+		sprintf("Loading %s\n", dmPath);
 		int ch, lines = 0;
 		do
 		{
@@ -533,16 +354,16 @@ int Menu_Main(void)
 		rewind(fp);
 
 		dmTotal = lines;
-		dmItem = (u32 *)malloc(sizeof(u32) * lines);
+		dmItem = (uint32_t *)malloc(sizeof (uint32_t) * lines);
 
-		log_printf("Number of games to load(dontmove): %d\n", lines);
+		WHBLogPrintf("Number of games to load(dontmove): %d\n", lines);
 
 		for (int i = 0; i < lines; i++)
 		{
 			size_t len = titleIDSize;
 			char *currTitleID = (char *)malloc(len + 1);
 			getline(&currTitleID, &len, fp);
-			dmItem[i] = (u32)strtol(currTitleID, NULL, 16);
+			dmItem[i] = (uint32_t)strtol(currTitleID, NULL, 16);
 			free(currTitleID);
 		}
 
@@ -550,14 +371,14 @@ int Menu_Main(void)
 	}
 	else
 	{
-		log_printf("Could not open %s\n", dmPath);
+		WHBLogPrintf("Could not open %s\n", dmPath);
 	}
 
 	if (badNamingMode)
 	{
 		char gmPath[65] = "";
 		sprintf(gmPath, "%s%1x.psv", gamemapPath, userPersistentId & 0x0000000f);
-		fp = fopen(gmPath, "rb");
+		FILE *fp = fopen(gmPath, "rb");
 		if (!fp)
 		{
 			sprintf(gmPath, "%s.psv", gamemapPath);
@@ -565,7 +386,7 @@ int Menu_Main(void)
 		}
 		if (fp)
 		{
-			log_printf("Loading %s\n", gmPath);
+			WHBLogPrintf("Loading %s\n", gmPath);
 			int ch, max_ch_count, ch_count, lines = 0;
 			do
 			{
@@ -580,7 +401,7 @@ int Menu_Main(void)
 			} while (ch != EOF);
 			rewind(fp);
 
-			log_printf("Number of games in the map to load(dontmove): %d\n", lines);
+			WHBLogPrintf("Number of games in the map to load(dontmove): %d\n", lines);
 
 			for (int i = 0; i < lines; i++)
 			{
@@ -599,7 +420,7 @@ int Menu_Main(void)
 		}
 		else
 		{
-			log_printf("Could not open %s\n", gmPath);
+			WHBLogPrintf("Could not open %s\n", gmPath);
 		}
 	}
 
@@ -610,7 +431,7 @@ int Menu_Main(void)
 	char baristaPath[255] = "";
 	folderExists[0] = true;
 	sprintf(baristaPath, "storage_mlc:/usr/save/00050010/%08x/user/%08x/BaristaAccountSaveFile.dat", sysmenuId, userPersistentId);
-	log_printf("%s\n", baristaPath);
+	WHBLogPrintf("%s\n", baristaPath);
 
 	int itemsCount = 0;
 
@@ -627,22 +448,22 @@ int Menu_Main(void)
 		if (readToBuffer(&fBuffer, &fSize, baristaPath) < 0)
 		{
 			strcpy(failError, "Could not open BaristaAccountSaveFile.dat\n");
-			goto prgEnd;
+			goto exit;
 		}
 		if (fBuffer == NULL)
 		{
 			strcpy(failError, "Memory not allocated for BaristaAccountSaveFile.dat\n");
-			goto prgEnd;
+			goto exit;
 		}
 
-		log_printf("BaristaAccountSaveFile.dat size = %d\n", fSize);
+		WHBLogPrintf("BaristaAccountSaveFile.dat size = %d\n", fSize);
 		// Main Menu - First pass - Get names
 		// Only movable items will be added.
 		for (int fNum = 0; fNum <= 60; fNum++)
 		{
 			if (!folderExists[fNum])
 				continue;
-			log_printf("\nReading - Folder %d\n", fNum);
+			WHBLogPrintf("\nReading - Folder %d\n", fNum);
 			int currItemNum = 0;
 			int movableItemsCount = 0;
 			int maxItemsCount = MAX_ITEMS_COUNT;
@@ -658,13 +479,12 @@ int Menu_Main(void)
 			{
 				moveableItem[i] = true;
 				int itemOffset = i * 16 + folderOffset;
-				u32 id = 0;
-				u32 type = 0;
-				memcpy(&id, fBuffer + itemOffset + 4, sizeof(u32));
-				memcpy(&type, fBuffer + itemOffset + 8, sizeof(u32));
+				uint32_t id = 0;
+				uint32_t type = 0;
+				memcpy(&id, fBuffer + itemOffset + 4, sizeof (uint32_t));
+				memcpy(&type, fBuffer + itemOffset + 8, sizeof(uint32_t));
 
 				if ((id == HBL_TITLE_ID)		  // HBL
-					|| (cbhcID && (id == cbhcID)) // CBHC
 					|| (type == MENU_ITEM_DISC)	  // Disc
 					|| (type == MENU_ITEM_VWII))  // vWii
 				{
@@ -684,8 +504,8 @@ int Menu_Main(void)
 				if (type == MENU_ITEM_NAND)
 				{
 					// Settings, MiiMaker, etc?
-					u32 idH = 0;
-					memcpy(&idH, fBuffer + itemOffset, sizeof(u32));
+					uint32_t idH = 0;
+					memcpy(&idH, fBuffer + itemOffset, sizeof (uint32_t));
 
 					if ((idH != 0x00050000) && (idH != 0x00050002) && (idH != 0))
 					{
@@ -696,11 +516,9 @@ int Menu_Main(void)
 					// If not NAND then check USB
 					if (id == 0)
 					{
-						if (!usb_Connected)
-							continue;
 						itemOffset += usbOffset;
 						id = 0;
-						memcpy(&id, fBuffer + itemOffset + 4, sizeof(u32));
+						memcpy(&id, fBuffer + itemOffset + 4, sizeof (uint32_t));
 						type = fBuffer[itemOffset + 0x0b];
 						if ((id == 0) || (type != MENU_ITEM_USB))
 							continue;
@@ -722,7 +540,7 @@ int Menu_Main(void)
 						continue;
 
 					// found sortable item
-					memcpy(&menuItem[currItemNum].titleIDPrefix, fBuffer + itemOffset, sizeof(u32));
+					memcpy(&menuItem[currItemNum].titleIDPrefix, fBuffer + itemOffset, sizeof (uint32_t));
 					getIDname(id, menuItem[currItemNum].titleIDPrefix, menuItem[currItemNum].name, 65, type);
 					menuItem[currItemNum].ID = id;
 					menuItem[currItemNum].type = type;
@@ -730,7 +548,7 @@ int Menu_Main(void)
 				}
 			}
 			movableItemsCount = currItemNum;
-			log_printf("\nDone reading folders \n");
+			WHBLogPrintf("\nDone reading folders \n");
 
 			if (!count)
 			{
@@ -738,17 +556,17 @@ int Menu_Main(void)
 				qsort(menuItem, movableItemsCount, sizeof(struct MenuItemStruct), fSortCond);
 
 				// Move Folder Items
-				log_printf("\nNew Order - Folder %d\n", fNum);
+				WHBLogPrintf("\nNew Order - Folder %d\n", fNum);
 				currItemNum = 0;
 				for (int i = 0; i < maxItemsCount; i++)
 				{
 					if (!moveableItem[i])
 						continue;
 					int itemOffset = i * 16 + folderOffset;
-					u32 idNAND = 0;
-					u32 idNANDh = 0;
-					u32 idUSB = 0;
-					u32 idUSBh = 0;
+					uint32_t idNAND = 0;
+					uint32_t idNANDh = 0;
+					uint32_t idUSB = 0;
+					uint32_t idUSBh = 0;
 					if (currItemNum < movableItemsCount)
 					{
 						if (menuItem[currItemNum].type == MENU_ITEM_NAND)
@@ -761,19 +579,19 @@ int Menu_Main(void)
 							idUSB = menuItem[currItemNum].ID;
 							idUSBh = menuItem[currItemNum].titleIDPrefix;
 						}
-						log_printf("[%d][%08x] %s\n", i, menuItem[currItemNum].ID, menuItem[currItemNum].name);
+						WHBLogPrintf("[%d][%08x] %s\n", i, menuItem[currItemNum].ID, menuItem[currItemNum].name);
 						currItemNum++;
 					}
 
-					memcpy(fBuffer + itemOffset, &idNANDh, sizeof(u32));
-					memcpy(fBuffer + itemOffset + 4, &idNAND, sizeof(u32));
+					memcpy(fBuffer + itemOffset, &idNANDh, sizeof (uint32_t));
+					memcpy(fBuffer + itemOffset + 4, &idNAND, sizeof (uint32_t));
 					memset(fBuffer + itemOffset + 8, 0, 8);
 					fBuffer[itemOffset + 0x0b] = 1;
 
 					itemOffset += usbOffset;
 
-					memcpy(fBuffer + itemOffset, &idUSBh, sizeof(u32));
-					memcpy(fBuffer + itemOffset + 4, &idUSB, sizeof(u32));
+					memcpy(fBuffer + itemOffset, &idUSBh, sizeof (uint32_t));
+					memcpy(fBuffer + itemOffset + 4, &idUSB, sizeof (uint32_t));
 					memset(fBuffer + itemOffset + 8, 0, 8);
 					fBuffer[itemOffset + 0x0b] = 2;
 				}
@@ -782,7 +600,7 @@ int Menu_Main(void)
 
 		if (!count)
 		{
-			fp = fopen(baristaPath, "wb");
+			FILE *fp = fopen(baristaPath, "wb");
 			if (fp)
 			{
 				fwrite(fBuffer, 1, fSize, fp);
@@ -791,7 +609,7 @@ int Menu_Main(void)
 			else
 			{
 				strcpy(failError, "Could not write to BaristaAccountSaveFile.dat\n");
-				goto prgEnd;
+				goto exit;
 			}
 		}
 
@@ -803,56 +621,40 @@ int Menu_Main(void)
 
 	char text[20] = "";
 	sprintf(text, "User ID: %1x", userPersistentId & 0x0000000f);
-	screenPrint(text);
+	OSScreenPutFont(0, 1, text);
 	if (itemsCount != 0)
 	{
 		char countText[21] = "";
 		sprintf(countText, "Items count: %d/%d", itemsCount, MAX_ITEMS_COUNT);
-		screenPrint(countText);
+		OSScreenPutFont(0, 2, countText);
 	}
-	screenPrint("Press Home to exit");
+	OSScreenPutFont(0, 4, "Press Home to exit");
 
-	while (1)
+	while (WHBProcIsRunning())
 	{
-		VPADRead(0, &vpad, 1, &vpadError);
-		u32 pressedBtns = 0;
-
-		if (!vpadError)
-			pressedBtns = vpad.btns_d | vpad.btns_h;
+		 VPADRead(VPAD_CHAN_0, &buffer, 1, NULL);
+		uint32_t pressedBtns = 0;
+			pressedBtns = buffer.trigger | buffer.hold;
 
 		if (pressedBtns & VPAD_BUTTON_HOME)
 			break;
 
-		usleep(1000);
+		OSSleepTicks(OSMillisecondsToTicks(100));
 	}
-	failed = 0;
 
-prgEnd:
-	if (failed)
-	{
-		screenPrint(failError);
-		sleep(5);
-	}
-	log_printf("Unmount\n");
-
-	fatUnmount("sd");
-	fatUnmount("usb");
-	IOSUHAX_sdio_disc_interface.shutdown();
-	IOSUHAX_usb_disc_interface.shutdown();
-	unmount_fs("storage_slc");
-	unmount_fs("storage_mlc");
-	unmount_fs("storage_usb");
-	IOSUHAX_FSA_Close(fsaFd);
-	if (mcp_hook_fd >= 0)
-		MCPHookClose();
-	else
-		IOSUHAX_Close();
-
-	log_printf("Exiting\n");
+exit:
+	WHBLogPrintf("Unmount\n");
+	Mocha_UnmountFS("storage_slc");
+	Mocha_UnmountFS("storage_mlc");
+	Mocha_UnmountFS("storage_usb");
+	Mocha_DeInitLibrary();
+	WHBLogPrintf("Exiting\n");  
 	//memoryRelease();
-	log_deinit();
+	WHBLogUdpDeinit();
+	WHBLogConsoleFree();
+	WHBProcShutdown();
 
-	return EXIT_SUCCESS;
+	return 0;
 }
 
 /*******************************************************************************

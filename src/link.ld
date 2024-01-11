@@ -1,4 +1,4 @@
-OUTPUT(menu_sort.elf);
+OUTPUT(menu_sort.wuhb);
 
 /* Tell linker where our application entry is so the garbage collect can work correct */
 ENTRY(__entry_menu);

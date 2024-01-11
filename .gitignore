@@ -1,3 +1,6 @@
 /build
-/*.elf
-.history
+/.vscode
+*.elf
+*.rpx
+*.zip
+*.wuhb
