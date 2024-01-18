@@ -2,40 +2,44 @@
 #include <malloc.h>
 #include <math.h>
 #include <stdint.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "common/common.h"
+#include "utils/dict.h"
+#include "utils/file.h"
+#include "utils/screen.h"
+#include "utils/removethe.h"
 #include <dirent.h>
 #include <mocha/mocha.h>
 #include <coreinit/filesystem_fsa.h>
 #include <coreinit/ios.h>
 #include <coreinit/mcp.h>
 #include <coreinit/exit.h>
-#include <coreinit/thread.h>
 #include <coreinit/time.h>
+#include <coreinit/thread.h>
 #include <coreinit/screen.h>
 #include <coreinit/systeminfo.h>
 #include <vpad/input.h>
 #include <nn/ac.h>
 #include <nn/act.h>
 #include <unistd.h>
+#include <sysapp/title.h>
 #include <wut.h>
 #include <whb/log.h>
 #include <whb/log_udp.h>
 #include <whb/log_console.h>
 #include <whb/proc.h>
-#include "utils/dict.h"
-#include "utils/file.h"
 
-#define TITLE_TEXT "Sort Wii U Menu v1.3.0 - doino-gretchenliev & VannyBuns"
-#define HBL_TITLE_ID 0x13374842
 #define MAX_ITEMS_COUNT 300
-#define _SYSGetSystemApplicationTitleId
+#define __STDC_WANT_LIB_EXT2__ 1
 #define OSScreenClearBuffer(color) ({ \
     OSScreenClearBufferEx(SCREEN_TV, color); \
     OSScreenClearBufferEx(SCREEN_DRC, color); \
 })	
+
+#define OSScreenFlipBuffers() ({ \
+    OSScreenFlipBuffersEx(SCREEN_TV); \
+    OSScreenFlipBuffersEx(SCREEN_DRC); \
+})
 
 #define OSScreenPutFont(row, column, buffer) ({ \
     OSScreenPutFontEx(SCREEN_TV, row, column, buffer); \
@@ -51,6 +55,7 @@ int ignoreThe = 0;
 int backup = 0;
 int restore = 0;
 int count = 0;
+int gClient = -1;
 struct MenuItemStruct
 {
 	uint32_t ID;
@@ -75,8 +80,8 @@ enum itemTypes
 
 int smartStrcmp(const char *a, const char *b, const uint32_t a_id, const uint32_t b_id)
 {
-	char *ac = malloc(strlen(a) + 1);
-	char *bc = malloc(strlen(b) + 1);
+	char *ac = (char*)malloc(strlen(a) + 1);
+	char *bc = (char*)malloc(strlen(b) + 1);
 
 	strcpy(ac, a);
 	strcpy(bc, b);
@@ -136,7 +141,7 @@ int readToBuffer(char **ptr, size_t *bufferSize, const char *path)
 	fseek(fp, 0L, SEEK_END); // fstat.st_size returns 0, so we use this instead
 	size = ftell(fp);
 	rewind(fp);
-	*ptr = malloc(size);
+	*ptr = (char*)malloc(size);
 	memset(*ptr, 0, size);
 	fread(*ptr, 1, size, fp);
 	fclose(fp);
@@ -152,29 +157,37 @@ void getIDname(uint32_t id, uint32_t titleIDPrefix, char *name, size_t nameSize,
 	WHBLogPrintf("%s\n", path);
 }
 
-int main(int argc, char **argv) {
+void ExitSort()
+	{
+		WHBLogPrintf("Unmount\n");
+		Mocha_UnmountFS("storage_slc");
+		Mocha_UnmountFS("storage_mlc");
+		Mocha_UnmountFS("storage_usb");
+		WHBLogPrintf("Exiting\n");  
+		WHBLogUdpDeinit();
+		WHBLogConsoleFree();
+		WHBProcShutdown();
+	}
+
+int main(int argc, char **argv){
 
     if (Mocha_InitLibrary() != MOCHA_RESULT_SUCCESS) {
         WHBLogPrintf("Mocha_InitLibrary failed");
         WHBLogConsoleDraw();
         OSSleepTicks(OSMillisecondsToTicks(3000));
-        goto exit;
-    }
+        ExitSort();
+		return  0;    }
 
 	char *fBuffer = NULL;
 	size_t fSize = 0;
 	char failError[65] = "";
+	int usb_Connected = 0;
 	int userPersistentId = 0;
-	int screenGetPrintLine();
-	void screenSetPrintLine(int line);
-	int screenPrintAt(int x, int y, char *fmt, ...);
 	uint32_t sysmenuId = 0;
 
 	VPADInit();
-
-	OSScreenInit();
 	OSScreenClearBuffer(0);
-	OSScreenPutFont(0, 0, TITLE_TEXT);
+	OSScreenPutFont(0, 0, "Sort Wii U Menu v2.0 - doino-gretchenliev & VannyBuns");
 	OSScreenPutFont(0, 1, "Choose sorting method:");
 	OSScreenPutFont(0, 2, "Press 'B' for standard sorting.");
 	OSScreenPutFont(0, 3, "Press 'A' for standard sorting(ignoring leading 'The').");
@@ -183,6 +196,8 @@ int main(int argc, char **argv) {
 	OSScreenPutFont(0, 6, "Press '+' for backup of the current order(incl. folders).");
 	OSScreenPutFont(0, 7, "Press '-' for restore of the current order(incl. folders).");
 	OSScreenPutFont(0, 8, "Press 'L' for counting the items only(no changes).");
+	OSScreenFlipBuffers();
+	
 
 
 	char modeText[25] = "";
@@ -192,10 +207,11 @@ int main(int argc, char **argv) {
 	VPADStatus buffer;
 	while (WHBProcIsRunning())
 	{
-
+		OSScreenClearBuffer(0);
 		VPADRead(VPAD_CHAN_0, &buffer, 1, NULL);
 		uint32_t pressedBtns = 0;
-			pressedBtns = (buffer.trigger | buffer.hold);
+		if(!NULL)
+			pressedBtns = buffer.trigger | buffer.hold;
 
 		if (pressedBtns & VPAD_BUTTON_B)
 		{
@@ -253,40 +269,37 @@ int main(int argc, char **argv) {
 			strcpy(modeText, "count");
 			break;
 		}
-
-		usleep(1000);
+        OSSleepTicks(OSMillisecondsToTicks(1000));
 	}
 
 	OSScreenClearBuffer(0);
-	void screenSetPrintLine(int line);
-	OSScreenPutFont(0,0, TITLE_TEXT);
+	screenSetPrintLine(0);
+	OSScreenPutFont(0,0, "Sort Wii U Menu v2.0 - doino-gretchenliev & VannyBuns");
 	char modeSelectedText[50] = "";
 	sprintf(modeSelectedText, "Starting %s%s...", modeText, ignoreTheText);
-	OSScreenPutFont(0, 2, modeSelectedText);
+	OSScreenPutFont(0, 1, modeSelectedText);
 	WHBLogPrintf(modeSelectedText);
 
 	// Get Wii U Menu Title
 	// Do this before mounting the file system.
 	// It screws it up if done after.
-	uint64_t sysmenuIdUll = _SYSGetSystemApplicationTitleId(0);
+	uint64_t sysmenuIdUll = _SYSGetSystemApplicationTitleId(SYSTEM_APP_ID_WII_U_MENU);
 	if ((sysmenuIdUll & 0xffffffff00000000) == 0x0005001000000000)
 		sysmenuId = sysmenuIdUll & 0x00000000ffffffff;
 	else
 	{
 		strcpy(failError, "Failed to get Wii U Menu Title!");
-		goto exit;
+		ExitSort();
+		return  0;	
 	}
 	WHBLogPrintf("Wii U Menu Title = %08X\n", sysmenuId);
 
 	// Get current user account slot
-	ACInitialize();
-	
-	int GetSlotNo();
-	int GetPersistentId();
-	unsigned char userSlot = GetSlotNo();
-	userPersistentId = GetPersistentId(userSlot);
+	nn::ac::Initialize();
+	unsigned char userSlot = nn::act::GetSlotNo();
+	userPersistentId = nn::act::GetPersistentIdEx(userSlot);
 	WHBLogPrintf("User Slot = %d, ID = %08x\n", userSlot, userPersistentId);
-	ACFinalize();
+	nn::ac::Finalize();
 
 	//!*******************************************************************
 	//!                        Initialize FS                             *
@@ -294,38 +307,33 @@ int main(int argc, char **argv) {
 	WHBLogPrintf("Mount partitions\n");
 
 			FSAInit();
-			int	gClient = FSAAddClient(NULL);
+			int res = Mocha_InitLibrary();
+			gClient = FSAAddClient(NULL);
 			if (gClient == 0) {
 			WHBLogPrintf("Failed to add FSAClient");
 			WHBLogConsoleDraw();
 			OSSleepTicks(OSMillisecondsToTicks(3000));
-			goto exit;
-		}
+			ExitSort();
+			return  0;		}
 		if (Mocha_UnlockFSClientEx(gClient) != MOCHA_RESULT_SUCCESS) 
 		{
 			FSADelClient(gClient);
-			strcpy(failError, "Failed to add FSAClient");
-			WHBLogConsoleDraw();
+			WHBLogPrintf( "Failed to add FSAClient");
 			OSSleepTicks(OSMillisecondsToTicks(3000));
-			goto exit;
-		}
+			ExitSort();
+			return  0;		}
 		if (Mocha_MountFS("storage_slc", NULL, "/vol/system") < 0)
 		{
-			FSADelClient(gClient);
 			strcpy(failError, "Failed to mount SLC!");
-			WHBLogConsoleDraw();
-			OSSleepTicks(OSMillisecondsToTicks(3000));
-			goto exit;
-		}
+			ExitSort();
+			return  0;		}
 		if (Mocha_MountFS("storage_mlc", NULL, "/vol/storage_mlc01") < 0)
 		{
-			FSADelClient(gClient);
 			strcpy(failError, "Failed to Mount MLC!");
-			WHBLogConsoleDraw();
-			OSSleepTicks(OSMillisecondsToTicks(3000));
-			goto exit;
-		}
-		Mocha_MountFS("storage_usb", NULL, "/vol/storage_usb01");
+			ExitSort();
+			return  0;		}
+			res = Mocha_MountFS("storage_usb", NULL, "/vol/storage_usb01");
+			usb_Connected = res >= 0;
 
 	// Read Don't Move titles.
 	// first try dontmoveX.hex where X is the user ID
@@ -448,13 +456,13 @@ int main(int argc, char **argv) {
 		if (readToBuffer(&fBuffer, &fSize, baristaPath) < 0)
 		{
 			strcpy(failError, "Could not open BaristaAccountSaveFile.dat\n");
-			goto exit;
-		}
+			ExitSort();
+			return  0;		}
 		if (fBuffer == NULL)
 		{
 			strcpy(failError, "Memory not allocated for BaristaAccountSaveFile.dat\n");
-			goto exit;
-		}
+			ExitSort();
+			return  0;		}
 
 		WHBLogPrintf("BaristaAccountSaveFile.dat size = %d\n", fSize);
 		// Main Menu - First pass - Get names
@@ -484,9 +492,8 @@ int main(int argc, char **argv) {
 				memcpy(&id, fBuffer + itemOffset + 4, sizeof (uint32_t));
 				memcpy(&type, fBuffer + itemOffset + 8, sizeof(uint32_t));
 
-				if ((id == HBL_TITLE_ID)		  // HBL
-					|| (type == MENU_ITEM_DISC)	  // Disc
-					|| (type == MENU_ITEM_VWII))  // vWii
+				if ((type == MENU_ITEM_DISC)	  // Disc
+				|| (type == MENU_ITEM_VWII))  // vWii
 				{
 					moveableItem[i] = false;
 					itemsCount++;
@@ -516,6 +523,8 @@ int main(int argc, char **argv) {
 					// If not NAND then check USB
 					if (id == 0)
 					{
+						if (!usb_Connected)
+							continue;
 						itemOffset += usbOffset;
 						id = 0;
 						memcpy(&id, fBuffer + itemOffset + 4, sizeof (uint32_t));
@@ -609,24 +618,24 @@ int main(int argc, char **argv) {
 			else
 			{
 				strcpy(failError, "Could not write to BaristaAccountSaveFile.dat\n");
-				goto exit;
-			}
+				ExitSort();
+				return  0;			}
 		}
 
 		free(fBuffer);
 		free(dmItem);
 	}
 
-	screenPrintAt(strlen(modeSelectedText), screenGetPrintLine(), "done.");
+	OSScreenPutFont(strlen(modeSelectedText), screenGetPrintLine(), "done.");
 
 	char text[20] = "";
 	sprintf(text, "User ID: %1x", userPersistentId & 0x0000000f);
-	OSScreenPutFont(0, 1, text);
+	OSScreenPutFont(0, 2, text);
 	if (itemsCount != 0)
 	{
 		char countText[21] = "";
 		sprintf(countText, "Items count: %d/%d", itemsCount, MAX_ITEMS_COUNT);
-		OSScreenPutFont(0, 2, countText);
+		OSScreenPutFont(0, 3, countText);
 	}
 	OSScreenPutFont(0, 4, "Press Home to exit");
 
@@ -634,6 +643,7 @@ int main(int argc, char **argv) {
 	{
 		 VPADRead(VPAD_CHAN_0, &buffer, 1, NULL);
 		uint32_t pressedBtns = 0;
+		if(!NULL)
 			pressedBtns = buffer.trigger | buffer.hold;
 
 		if (pressedBtns & VPAD_BUTTON_HOME)
@@ -641,19 +651,13 @@ int main(int argc, char **argv) {
 
 		OSSleepTicks(OSMillisecondsToTicks(100));
 	}
+	 FSAFlushVolume(gClient, "/vol/storage_mlc01");
+	 FSAFlushVolume(gClient, "vol/storage_usb01");
+	 FSAFlushVolume(gClient, "vol/system");
 
-exit:
-	WHBLogPrintf("Unmount\n");
-	Mocha_UnmountFS("storage_slc");
-	Mocha_UnmountFS("storage_mlc");
-	Mocha_UnmountFS("storage_usb");
+    FSADelClient(gClient);
 	Mocha_DeInitLibrary();
-	WHBLogPrintf("Exiting\n");  
-	//memoryRelease();
-	WHBLogUdpDeinit();
-	WHBLogConsoleFree();
-	WHBProcShutdown();
-
+	ExitSort();
 	return 0;
 }
 

@@ -1,5 +1,8 @@
+#include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <utils/dict.h>
+#include <malloc.h>
 
 #define HASHSIZE 101
 

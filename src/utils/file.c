@@ -2,14 +2,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <malloc.h>
 #include <unistd.h>
 #include <errno.h>
 
 size_t getline(char **lineptr, size_t *n, FILE *stream)
 {
     char *bufptr = NULL;
-    char *p = bufptr;
-    size_t size;
+	char *p = bufptr;
+	size_t size;
     int c;
 
     if (lineptr == NULL)
